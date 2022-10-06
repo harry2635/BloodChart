@@ -2,7 +2,10 @@ package com.example.bloodchart;
 
 import static androidx.constraintlayout.widget.ConstraintLayoutStates.TAG;
 
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.camera.core.CameraX;
+import androidx.camera.core.ImageCapture;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
@@ -12,22 +15,41 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.sqlite.SQLiteDatabase;
+import android.graphics.Bitmap;
+import android.graphics.Point;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.StrictMode;
+import android.provider.MediaStore;
 import android.util.Log;
+import android.util.Rational;
+import android.util.Size;
+import android.view.TextureView;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.google.android.gms.tasks.OnFailureListener;
+import com.google.android.gms.tasks.OnSuccessListener;
+import com.google.android.gms.tasks.Task;
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.Text;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.TextRecognizer;
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
+import com.theartofdev.edmodo.cropper.CropImage;
+import com.theartofdev.edmodo.cropper.CropImageView;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.Permissions;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Locale;
@@ -38,7 +60,15 @@ public class HomeActivity extends AppCompatActivity{
     private ImageView imageView;
     private Button btn_signup, btn_data, btn_OCR, btn_csv;
     private TextView tv_username,tv_ocrResult;
-    private static  final int REQUEST_CAMERA_CODE = 100;
+    private  static final int REQUEST_CAMERA_CODE = 100;
+    Bitmap bitmap;
+    private PermissionManager permissionManager;
+    private String[] permissions = {Manifest.permission.CAMERA,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE,
+            Manifest.permission.READ_EXTERNAL_STORAGE};
+    private ImageCapture imgCap;
+
+    private Integer count;
     public String account, username;
     public ArrayList<String> userRecordData = new ArrayList<String>();
     DBHelper DB;
@@ -52,12 +82,16 @@ public class HomeActivity extends AppCompatActivity{
             != PackageManager.PERMISSION_GRANTED){
             requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1000);
         }
-        if (ContextCompat.checkSelfPermission(HomeActivity.this, Manifest.permission.CAMERA)
-                != PackageManager.PERMISSION_GRANTED) {
+
+        if(ContextCompat.checkSelfPermission(HomeActivity.this, Manifest.permission.CAMERA)
+           != PackageManager.PERMISSION_GRANTED){
             ActivityCompat.requestPermissions(HomeActivity.this, new String[]{
                     Manifest.permission.CAMERA
             }, REQUEST_CAMERA_CODE);
         }
+
+//        permissionManager = PermissionManager.getInstance(this);
+
 
 
 
@@ -70,6 +104,7 @@ public class HomeActivity extends AppCompatActivity{
         //TextView
         tv_username = findViewById(R.id.tv_name);
         tv_ocrResult = findViewById(R.id.tv_ocrResult);
+
         //Bundle
         Bundle bundle = getIntent().getExtras();
         username = bundle.getString("username");
@@ -115,12 +150,113 @@ public class HomeActivity extends AppCompatActivity{
         btn_OCR.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
+//                if(!permissionManager.checkPermissions(permissions)){
+//                    permissionManager.askPermissions(HomeActivity.this,
+//                            permissions,100);
+//                }else {
+//                    openCamera();
+//                }
+                CropImage.activity().setGuidelines(CropImageView.Guidelines.ON).start(HomeActivity.this);
 
             }
         });
 
 
     }
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @NonNull Intent data){
+        super.onActivityResult(requestCode, resultCode, data);
+        if(requestCode == CropImage.CROP_IMAGE_ACTIVITY_REQUEST_CODE){
+            CropImage.ActivityResult result = CropImage.getActivityResult(data);
+            if(resultCode == RESULT_OK){
+                Uri resultUri = result.getUri();
+                try {
+                    bitmap = MediaStore.Images.Media.getBitmap(this.getContentResolver(), resultUri);
+                    getTextFromImage(bitmap);
+                }catch (IOException e){
+                    e.printStackTrace();
+                }
+
+
+            }
+        }
+    }
+    private void getTextFromImage(Bitmap bitmap){
+        TextRecognizer recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+        InputImage image = InputImage.fromBitmap(bitmap, 0);
+        Task<Text> result =
+                recognizer.process(image)
+                        .addOnSuccessListener(new OnSuccessListener<Text>() {
+                            @Override
+                            public void onSuccess(Text visionText) {
+                                System.out.println(visionText.getTextBlocks().size());
+                                if(visionText.getTextBlocks().size() % 4 == 0){
+                                    String[] title = {"date", "time", "sbp", "dbp"};
+                                    count = 0;
+                                    ArrayList<String> ocrData = new ArrayList<>();
+
+                                    Integer blockLength = visionText.getTextBlocks().size() / 4 ;
+
+                                    for(Text.TextBlock block : visionText.getTextBlocks()){
+                                        String blockText = block.getText();
+                                        ocrData.add(blockText);
+//                                        System.out.println("CC");
+//                                        System.out.println(blockText);
+                                    }
+                                    for(int i = 0; i<blockLength; i++){
+                                        Boolean insert = DB.insertBPdata(account,
+                                                ocrData.get(i*4),ocrData.get(i*4+1),ocrData.get(i*4+2),ocrData.get(i*4+3));
+//                                        System.out.println(ocrData.get(i*4));
+//                                        System.out.println(ocrData.get(i*4 + 1));
+//                                        System.out.println(ocrData.get(i*4 + 2));
+//                                        System.out.println(ocrData.get(i*4 + 3));
+                                    }
+
+                                    System.out.println("Total");
+                                    System.out.println(ocrData);
+
+                                    Toast.makeText(HomeActivity.this,"OCR Success", Toast.LENGTH_SHORT).show();
+                                }else{
+                                    Toast.makeText(HomeActivity.this,"字體無法識別", Toast.LENGTH_SHORT).show();
+                                }
+
+                            }
+                        })
+                        .addOnFailureListener(new OnFailureListener() {
+                            @Override
+                            public void onFailure(@NonNull Exception e) {
+                                System.out.println("---------------OCR Failed----------------");
+
+                            }
+                        });
+
+//        System.out.println("---------------OCR outside----------------");
+//        for(Text.TextBlock block : result.getResult().getTextBlocks()){
+//            String blockText = block.getText();
+//            System.out.println("CC");
+//        }
+
+    }
+
+
+//    @Override public void onRequestPermissionResult(int requestCode,
+//                                                    @NonNull String[] permissions,
+//                                                    @NonNull int[] grantResults){
+//        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+//        if(requestCode == 100){
+//            permissionManager.handlePermissionResult(HomeActivity.this,
+//                    100, permissions,
+//                    grantResults);
+//
+//            openCamera();
+//        }
+//    }
+//
+//    public void openCamera(){
+//        CameraX.unbindAll();
+//        Rational aspectRatio = new Rational(textureView.getWidth(), textureView.getHeight());
+//        Size screen = new Size()
+//    }
 
 
     public void creatCSV(StringBuffer userbpdata){
